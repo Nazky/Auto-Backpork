@@ -29,7 +29,7 @@ For legals reasons (and because i don't want my github account banned lol) i can
 - If you don't know what the others options are doing keep the default value.
 - When you are sure of you'r configuration simply type "y" to confirme.
 - When it's done you should have all the game files downgraded and signed with the fakelib folder, you can now copy and replace you'r old game files (make sure fakelib is in the root of the game folder).
-- Make sure to run the Backpork payload for every new games.
+- Make sure to run the Backpork payload for every new games (you maybe have to run [chmod_rec](https://github.com/zecoxao/chmod_rec) too).
 
 ### One line command
 You can also run a one line command, for exemple:
@@ -46,3 +46,5 @@ You can also run a one line command, for exemple:
 [john-tornblom](https://github.com/john-tornblom) | [make_fself.py](https://github.com/ps5-payload-dev/sdk/blob/master/samples/install_app/make_fself.py)
 
 [BestPig](https://github.com/BestPig) | [BackPork](https://github.com/BestPig/BackPork)
+
+[zecoxao](https://github.com/zecoxao) | [chmod_rec](https://github.com/zecoxao/chmod_rec)
