@@ -54,3 +54,5 @@ Or if you want to also decrypt the fake sign ELF:
 [BestPig](https://github.com/BestPig) | [BackPork](https://github.com/BestPig/BackPork)
 
 [zecoxao](https://github.com/zecoxao) | [chmod_rec](https://github.com/zecoxao/chmod_rec)
+
+[EchoStretch](https://github.com/EchoStretch) |[PS5-app-dumper](https://github.com/EchoStretch/ps5-app-dumper)
