@@ -240,9 +240,9 @@ def copy_fakelib(source_dir: Path, output_dir: Path) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Failed to copy fakelib: {str(e)}"
 
-def apply_librc_patch(input_dir: Path, use_colors: bool = True) -> Tuple[int, Dict[str, str]]:
+def apply_libc_patch(input_dir: Path, use_colors: bool = True) -> Tuple[int, Dict[str, str]]:
     """
-    Apply the Perl patch to librc.prx files when SDK pair is 6.
+    Apply the Perl patch to libc.prx files when SDK pair is 6.
     
     Args:
         input_dir: Directory containing the processed files
@@ -254,27 +254,27 @@ def apply_librc_patch(input_dir: Path, use_colors: bool = True) -> Tuple[int, Di
     results = {}
     patched_count = 0
     
-    print(f"\n{BLUE}{BOLD}[Extra Step] Applying librc.prx patch for SDK pair 6{RESET}")
+    print(f"\n{BLUE}{BOLD}[Extra Step] Applying libc.prx patch for SDK pair 6{RESET}")
     print(f"{YELLOW}{'─' * 60}{RESET}")
     
-    # Search recursively for librc.prx files (case-insensitive)
-    print(f"  Searching for librc.prx files in {input_dir}...")
+    # Search recursively for libc.prx files (case-insensitive)
+    print(f"  Searching for libc.prx files in {input_dir}...")
     
-    # Find all files that might be librc.prx
+    # Find all files that might be libc.prx
     potential_files = []
     for root, dirs, files in os.walk(input_dir):
         for filename in files:
-            # Look for files that might be librc.prx (case-insensitive)
+            # Look for files that might be libc.prx (case-insensitive)
             file_lower = filename.lower()
-            if 'librc' in file_lower and file_lower.endswith('.prx'):
+            if 'libc' in file_lower and file_lower.endswith('.prx'):
                 file_path = Path(root) / filename
                 potential_files.append(file_path)
-            # Also check for files that are exactly librc.prx (any case)
-            elif file_lower == 'librc.prx':
+            # Also check for files that are exactly libc.prx (any case)
+            elif file_lower == 'libc.prx':
                 file_path = Path(root) / filename
                 potential_files.append(file_path)
     
-    # Also search for files with .prx extension that might contain librc
+    # Also search for files with .prx extension that might contain libc
     for root, dirs, files in os.walk(input_dir):
         for filename in files:
             if filename.lower().endswith('.prx'):
@@ -347,15 +347,15 @@ def apply_librc_patch(input_dir: Path, use_colors: bool = True) -> Tuple[int, Di
                     
             else:
                 # Pattern not found in this file
-                if 'librc' in prx_path.name.lower():
-                    results[str(prx_path)] = "Pattern not found in librc.prx"
+                if 'libc' in prx_path.name.lower():
+                    results[str(prx_path)] = "Pattern not found in libc.prx"
                     print(f"  {YELLOW}Pattern not found in: {relative_path}{RESET}")
                     
         except Exception as e:
             results[str(prx_path)] = f"Error reading file: {str(e)}"
             print(f"  {RED}Error reading {relative_path}: {str(e)[:50]}{RESET}")
     
-    # Also try to search for the pattern in all binary files if no librc.prx found
+    # Also try to search for the pattern in all binary files if no libc.prx found
     if patched_count == 0 and len(potential_files) == 0:
         print(f"  {YELLOW}Searching for pattern in all binary files...{RESET}")
         
@@ -581,7 +581,7 @@ def process_downgrade_and_sign(input_dir: Path, output_dir: Path, sdk_pair: int,
         'downgrade': {'successful': 0, 'failed': 0, 'files': {}},
         'signing': {'successful': 0, 'failed': 0, 'files': {}},
         'fakelib': {'success': False, 'message': ''},
-        'librc_patch': {'applied': 0, 'results': {}}
+        'libc_patch': {'applied': 0, 'results': {}}
     }
     
     print(f"\n{BLUE}{BOLD}[Step 1/3] Downgrading SDK Versions{RESET}")
@@ -716,11 +716,11 @@ def process_downgrade_and_sign(input_dir: Path, output_dir: Path, sdk_pair: int,
     print(f"\n{CYAN}Signing complete: {results['signing']['successful']} successful, "
           f"{results['signing']['failed']} failed{RESET}")
     
-    # Step 3: Apply librc.prx patch if SDK pair is 6
+    # Step 3: Apply libc.prx patch if SDK pair is 6
     if sdk_pair == 6:
-        patched_count, patch_results = apply_librc_patch(output_dir, use_colors)
-        results['librc_patch']['applied'] = patched_count
-        results['librc_patch']['results'] = patch_results
+        patched_count, patch_results = apply_libc_patch(output_dir, use_colors)
+        results['libc_patch']['applied'] = patched_count
+        results['libc_patch']['results'] = patch_results
     
     # Step 4: Copy fakelib directory
     print(f"\n{BLUE}{BOLD}[Step 4/3] Copying Fakelib Directory{RESET}")
@@ -776,7 +776,7 @@ def process_full_pipeline(input_dir: Path, output_dir: Path, sdk_pair: int,
                 'downgrade': {'successful': 0, 'failed': 0, 'files': {}},
                 'signing': {'successful': 0, 'failed': 0, 'files': {}},
                 'fakelib': {'success': False, 'message': 'Pipeline aborted'},
-                'librc_patch': {'applied': 0, 'results': {}}
+                'libc_patch': {'applied': 0, 'results': {}}
             }
         
         # Step 2: Downgrade and sign
@@ -790,7 +790,7 @@ def process_full_pipeline(input_dir: Path, output_dir: Path, sdk_pair: int,
             'downgrade': downgrade_sign_results['downgrade'],
             'signing': downgrade_sign_results['signing'],
             'fakelib': downgrade_sign_results['fakelib'],
-            'librc_patch': downgrade_sign_results['librc_patch']
+            'libc_patch': downgrade_sign_results['libc_patch']
         }
         
         return results
@@ -842,15 +842,15 @@ def print_summary(results: Dict[str, Dict[str, any]], output_dir: Path, operatio
         print(f"  {RED if signing['failed'] > 0 else YELLOW}Failed: {signing['failed']}{RESET}")
         print(f"  {CYAN}Total: {signing['successful'] + signing['failed']}{RESET}")
     
-    if 'librc_patch' in results:
-        patch = results['librc_patch']
+    if 'libc_patch' in results:
+        patch = results['libc_patch']
         if patch.get('applied', 0) > 0:
-            print(f"\n{BOLD}Librc.prx Patch Results:{RESET}")
+            print(f"\n{BOLD}libc.prx Patch Results:{RESET}")
             print(f"  {GREEN}Files patched: {patch['applied']}{RESET}")
             if patch.get('results'):
                 print(f"  {CYAN}Details: {len(patch['results'])} file(s) processed{RESET}")
         elif 'results' in patch and patch['results']:
-            print(f"\n{BOLD}Librc.prx Patch Results:{RESET}")
+            print(f"\n{BOLD}libc.prx Patch Results:{RESET}")
             print(f"  {YELLOW}No files were patched (pattern not found){RESET}")
     
     if 'fakelib' in results:
@@ -1114,7 +1114,7 @@ Examples:
         
         # Special note for SDK pair 6
         if sdk_pair == 6:
-            print(f"  {YELLOW}{BOLD}Note:{RESET} SDK pair 6 selected - will apply librc.prx patch after signing{RESET}")
+            print(f"  {YELLOW}{BOLD}Note:{RESET} SDK pair 6 selected - will apply libc.prx patch after signing{RESET}")
     
     print(f"{BLUE}{BOLD}══════════════════════════════════════════════════════════{RESET}")
     
