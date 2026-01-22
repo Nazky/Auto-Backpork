@@ -44,6 +44,7 @@ Or if you want to also decrypt the fake sign ELF:
 
 ## TODO
 - [X] Add FSELF decryptor.
+- [X] Add support for 6.xx (need some more testing).
 - [ ] Add BPS files patcher.
 
 ## Credit
