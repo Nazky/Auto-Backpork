@@ -4,6 +4,7 @@ import os
 import sys
 import shutil
 import argparse
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from src.ps5_sdk_version_patcher import SDKVersionPatcher
@@ -239,6 +240,195 @@ def copy_fakelib(source_dir: Path, output_dir: Path) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Failed to copy fakelib: {str(e)}"
 
+def apply_librc_patch(input_dir: Path, use_colors: bool = True) -> Tuple[int, Dict[str, str]]:
+    """
+    Apply the Perl patch to librc.prx files when SDK pair is 6.
+    
+    Args:
+        input_dir: Directory containing the processed files
+        use_colors: Whether to use colored output
+        
+    Returns:
+        Tuple of (patched_count, results_dict)
+    """
+    results = {}
+    patched_count = 0
+    
+    print(f"\n{BLUE}{BOLD}[Extra Step] Applying librc.prx patch for SDK pair 6{RESET}")
+    print(f"{YELLOW}{'─' * 60}{RESET}")
+    
+    # Search recursively for librc.prx files (case-insensitive)
+    print(f"  Searching for librc.prx files in {input_dir}...")
+    
+    # Find all files that might be librc.prx
+    potential_files = []
+    for root, dirs, files in os.walk(input_dir):
+        for filename in files:
+            # Look for files that might be librc.prx (case-insensitive)
+            file_lower = filename.lower()
+            if 'librc' in file_lower and file_lower.endswith('.prx'):
+                file_path = Path(root) / filename
+                potential_files.append(file_path)
+            # Also check for files that are exactly librc.prx (any case)
+            elif file_lower == 'librc.prx':
+                file_path = Path(root) / filename
+                potential_files.append(file_path)
+    
+    # Also search for files with .prx extension that might contain librc
+    for root, dirs, files in os.walk(input_dir):
+        for filename in files:
+            if filename.lower().endswith('.prx'):
+                file_path = Path(root) / filename
+                if file_path not in potential_files:
+                    potential_files.append(file_path)
+    
+    if not potential_files:
+        print(f"  {YELLOW}No PRX files found in {input_dir}{RESET}")
+        return patched_count, results
+    
+    print(f"  Found {len(potential_files)} potential PRX file(s) to check\n")
+    
+    # Pattern to search for
+    pattern = b'4h6F1LLbTiw#A#B'
+    replacement = b'IWIBBdTHit4#A#B'
+    
+    for prx_path in potential_files:
+        relative_path = prx_path.relative_to(input_dir)
+        
+        try:
+            # Read file content
+            with open(prx_path, 'rb') as f:
+                content = f.read()
+            
+            # Check if pattern exists
+            if pattern in content:
+                print(f"  Found pattern in: {relative_path}")
+                print(f"    Patching...")
+                
+                # Create backup
+                backup_path = prx_path.with_suffix('.prx.bak')
+                shutil.copy2(prx_path, backup_path)
+                
+                try:
+                    # Apply patch
+                    patched_content = content.replace(pattern, replacement)
+                    
+                    # Write patched content
+                    with open(prx_path, 'wb') as f:
+                        f.write(patched_content)
+                    
+                    # Verify patch
+                    with open(prx_path, 'rb') as f:
+                        new_content = f.read()
+                    
+                    if pattern not in new_content and replacement in new_content:
+                        patched_count += 1
+                        results[str(prx_path)] = "Patch applied successfully"
+                        print(f"    {GREEN}✓ Patch applied successfully{RESET}")
+                    else:
+                        # Restore from backup
+                        shutil.copy2(backup_path, prx_path)
+                        results[str(prx_path)] = "Patch verification failed"
+                        print(f"    {RED}✗ Patch verification failed{RESET}")
+                
+                except Exception as e:
+                    # Restore from backup on error
+                    if backup_path.exists():
+                        shutil.copy2(backup_path, prx_path)
+                    results[str(prx_path)] = f"Error during patching: {str(e)}"
+                    print(f"    {RED}✗ Error: {str(e)[:50]}{RESET}")
+                
+                # Clean up backup
+                if backup_path.exists():
+                    try:
+                        os.remove(backup_path)
+                    except:
+                        pass
+                    
+            else:
+                # Pattern not found in this file
+                if 'librc' in prx_path.name.lower():
+                    results[str(prx_path)] = "Pattern not found in librc.prx"
+                    print(f"  {YELLOW}Pattern not found in: {relative_path}{RESET}")
+                    
+        except Exception as e:
+            results[str(prx_path)] = f"Error reading file: {str(e)}"
+            print(f"  {RED}Error reading {relative_path}: {str(e)[:50]}{RESET}")
+    
+    # Also try to search for the pattern in all binary files if no librc.prx found
+    if patched_count == 0 and len(potential_files) == 0:
+        print(f"  {YELLOW}Searching for pattern in all binary files...{RESET}")
+        
+        # Search for pattern in all files
+        all_files = []
+        for root, dirs, files in os.walk(input_dir):
+            for filename in files:
+                file_path = Path(root) / filename
+                # Skip non-binary files based on extension
+                if file_path.suffix.lower() in ['.txt', '.log', '.md', '.json', '.xml', '.html', '.py']:
+                    continue
+                all_files.append(file_path)
+        
+        print(f"  Checking {len(all_files)} binary file(s) for pattern...")
+        
+        for file_path in all_files:
+            try:
+                with open(file_path, 'rb') as f:
+                    content = f.read(10000)  # Read first 10KB to check
+                
+                if pattern in content:
+                    relative_path = file_path.relative_to(input_dir)
+                    print(f"  Found pattern in: {relative_path}")
+                    
+                    # Ask user if they want to patch this file
+                    if use_colors and not args.batch:
+                        response = input(f"    {CYAN}Patch this file? (y/N): {RESET}").strip().lower()
+                        if response not in ['y', 'yes']:
+                            continue
+                    
+                    # Create backup
+                    backup_path = file_path.with_suffix(file_path.suffix + '.bak')
+                    shutil.copy2(file_path, backup_path)
+                    
+                    # Read entire file
+                    with open(file_path, 'rb') as f:
+                        full_content = f.read()
+                    
+                    # Apply patch
+                    patched_content = full_content.replace(pattern, replacement)
+                    
+                    # Write patched content
+                    with open(file_path, 'wb') as f:
+                        f.write(patched_content)
+                    
+                    # Verify patch
+                    with open(file_path, 'rb') as f:
+                        new_content = f.read()
+                    
+                    if pattern not in new_content and replacement in new_content:
+                        patched_count += 1
+                        results[str(file_path)] = "Patch applied successfully"
+                        print(f"    {GREEN}✓ Patch applied successfully{RESET}")
+                    else:
+                        # Restore from backup
+                        shutil.copy2(backup_path, file_path)
+                        results[str(file_path)] = "Patch verification failed"
+                        print(f"    {RED}✗ Patch verification failed{RESET}")
+                    
+                    # Clean up backup
+                    if backup_path.exists():
+                        try:
+                            os.remove(backup_path)
+                        except:
+                            pass
+                            
+            except Exception as e:
+                # Skip files we can't read
+                pass
+    
+    print(f"\n  {CYAN}Total files patched: {patched_count}{RESET}")
+    return patched_count, results
+
 def is_elf_file(file_path: Path) -> bool:
     """
     Check if a file is an ELF file by checking its magic bytes.
@@ -390,7 +580,8 @@ def process_downgrade_and_sign(input_dir: Path, output_dir: Path, sdk_pair: int,
     results = {
         'downgrade': {'successful': 0, 'failed': 0, 'files': {}},
         'signing': {'successful': 0, 'failed': 0, 'files': {}},
-        'fakelib': {'success': False, 'message': ''}
+        'fakelib': {'success': False, 'message': ''},
+        'librc_patch': {'applied': 0, 'results': {}}
     }
     
     print(f"\n{BLUE}{BOLD}[Step 1/3] Downgrading SDK Versions{RESET}")
@@ -525,8 +716,14 @@ def process_downgrade_and_sign(input_dir: Path, output_dir: Path, sdk_pair: int,
     print(f"\n{CYAN}Signing complete: {results['signing']['successful']} successful, "
           f"{results['signing']['failed']} failed{RESET}")
     
-    # Step 3: Copy fakelib directory
-    print(f"\n{BLUE}{BOLD}[Step 3/3] Copying Fakelib Directory{RESET}")
+    # Step 3: Apply librc.prx patch if SDK pair is 6
+    if sdk_pair == 6:
+        patched_count, patch_results = apply_librc_patch(output_dir, use_colors)
+        results['librc_patch']['applied'] = patched_count
+        results['librc_patch']['results'] = patch_results
+    
+    # Step 4: Copy fakelib directory
+    print(f"\n{BLUE}{BOLD}[Step 4/3] Copying Fakelib Directory{RESET}")
     print(f"{YELLOW}{'─' * 60}{RESET}")
     
     # Find project root
@@ -578,7 +775,8 @@ def process_full_pipeline(input_dir: Path, output_dir: Path, sdk_pair: int,
                 'decrypt': decrypt_results['decrypt'],
                 'downgrade': {'successful': 0, 'failed': 0, 'files': {}},
                 'signing': {'successful': 0, 'failed': 0, 'files': {}},
-                'fakelib': {'success': False, 'message': 'Pipeline aborted'}
+                'fakelib': {'success': False, 'message': 'Pipeline aborted'},
+                'librc_patch': {'applied': 0, 'results': {}}
             }
         
         # Step 2: Downgrade and sign
@@ -591,7 +789,8 @@ def process_full_pipeline(input_dir: Path, output_dir: Path, sdk_pair: int,
             'decrypt': decrypt_results['decrypt'],
             'downgrade': downgrade_sign_results['downgrade'],
             'signing': downgrade_sign_results['signing'],
-            'fakelib': downgrade_sign_results['fakelib']
+            'fakelib': downgrade_sign_results['fakelib'],
+            'librc_patch': downgrade_sign_results['librc_patch']
         }
         
         return results
@@ -642,6 +841,17 @@ def print_summary(results: Dict[str, Dict[str, any]], output_dir: Path, operatio
         print(f"  {GREEN}Successful: {signing['successful']}{RESET}")
         print(f"  {RED if signing['failed'] > 0 else YELLOW}Failed: {signing['failed']}{RESET}")
         print(f"  {CYAN}Total: {signing['successful'] + signing['failed']}{RESET}")
+    
+    if 'librc_patch' in results:
+        patch = results['librc_patch']
+        if patch.get('applied', 0) > 0:
+            print(f"\n{BOLD}Librc.prx Patch Results:{RESET}")
+            print(f"  {GREEN}Files patched: {patch['applied']}{RESET}")
+            if patch.get('results'):
+                print(f"  {CYAN}Details: {len(patch['results'])} file(s) processed{RESET}")
+        elif 'results' in patch and patch['results']:
+            print(f"\n{BOLD}Librc.prx Patch Results:{RESET}")
+            print(f"  {YELLOW}No files were patched (pattern not found){RESET}")
     
     if 'fakelib' in results:
         fakelib = results['fakelib']
@@ -901,6 +1111,10 @@ Examples:
         print(f"  {BOLD}PAID:{RESET} 0x{paid:016X}")
         print(f"  {BOLD}PType:{RESET} 0x{ptype:08X}")
         print(f"  {BOLD}Create Backup:{RESET} {'Yes' if not args.no_backup else 'No'}")
+        
+        # Special note for SDK pair 6
+        if sdk_pair == 6:
+            print(f"  {YELLOW}{BOLD}Note:{RESET} SDK pair 6 selected - will apply librc.prx patch after signing{RESET}")
     
     print(f"{BLUE}{BOLD}══════════════════════════════════════════════════════════{RESET}")
     
