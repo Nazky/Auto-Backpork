@@ -12,9 +12,21 @@ import tempfile
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union, Any
-from src.ps5_sdk_version_patcher import SDKVersionPatcher
-from src.make_fself import FakeSignedELFConverter
-from src.decrypt_fself import UnsignedELFConverter
+try:
+    from src.ps5_sdk_version_patcher import SDKVersionPatcher
+    from src.make_fself import FakeSignedELFConverter
+    from src.decrypt_fself import UnsignedELFConverter
+except ImportError:
+    try:
+        from .src.ps5_sdk_version_patcher import SDKVersionPatcher
+        from .src.make_fself import FakeSignedELFConverter
+        from .src.decrypt_fself import UnsignedELFConverter
+    except ImportError:
+        raise ImportError(
+            "Could not import required modules. "
+            "Please ensure ps5_sdk_version_patcher.py, make_fself.py, "
+            "and decrypt_fself.py are available in the src folder."
+        )
 
 # ANSI color codes
 GREEN = '\033[92m'
@@ -47,7 +59,7 @@ class PS5ELFProcessor:
         """
         self.use_colors = use_colors
         self.project_root = Path(project_root) if project_root else Path(__file__).parent
-        
+    
     def _color(self, text: str, color_code: str) -> str:
         """Apply color to text if colors are enabled."""
         return color_code + text + RESET if self.use_colors else text
@@ -84,6 +96,12 @@ class PS5ELFProcessor:
         except:
             return False
     
+    def _should_skip_dir(self, dirs: List[str], skip_name: str = 'decrypted') -> None:
+        """Remove directories with specific names (case-insensitive) from the dirs list to skip them."""
+        dirs_to_remove = [d for d in dirs if d.lower() == skip_name.lower()]
+        for dir_name in dirs_to_remove:
+            dirs.remove(dir_name)
+    
     def get_supported_sdk_pairs(self) -> Dict[int, Tuple[int, int]]:
         """Get all supported SDK version pairs."""
         return SDKVersionPatcher.get_supported_pairs()
@@ -103,7 +121,7 @@ class PS5ELFProcessor:
         output_dir: Union[str, Path],
         overwrite: bool = False,
         verbose: bool = True,
-        save_to_config: bool = True  # NEW: Control whether to save to config
+        save_to_config: bool = True
     ) -> Dict[str, Any]:
         """
         Decrypt SELF files back to ELF files.
@@ -143,6 +161,9 @@ class PS5ELFProcessor:
         # Find all SELF files in input directory
         self_files = []
         for root, dirs, files in os.walk(input_dir):
+            # Skip folders named "decrypted"
+            self._should_skip_dir(dirs, 'decrypted')
+            
             for filename in files:
                 file_path = Path(root) / filename
                 if filename.endswith('.bak'):
@@ -230,10 +251,10 @@ class PS5ELFProcessor:
         verbose: bool = True
     ) -> Dict[str, Any]:
         """
-        Apply the libc.prx patch to SELF files in the directory.
+        Apply the libc.prx patch to SELF files in the directory or a single file.
         
         Args:
-            input_dir: Directory containing SELF files to patch
+            input_dir: Directory containing SELF files to patch OR a single file path
             search_pattern: Bytes pattern to search for (defaults to LIBC_PATCH_PATTERN)
             replacement_pattern: Bytes pattern to replace with (defaults to LIBC_PATCH_REPLACEMENT)
             create_backup: Create backup files before patching
@@ -242,7 +263,7 @@ class PS5ELFProcessor:
         Returns:
             Dictionary with patching results
         """
-        input_dir = Path(input_dir)
+        input_path = Path(input_dir)
         
         if search_pattern is None:
             search_pattern = self.LIBC_PATCH_PATTERN
@@ -251,7 +272,8 @@ class PS5ELFProcessor:
         
         results = {
             'operation': 'apply_libc_patch',
-            'input_dir': str(input_dir),
+            'input_path': str(input_path),
+            'is_file': input_path.is_file(),
             'search_pattern': search_pattern.hex(),
             'replacement_pattern': replacement_pattern.hex(),
             'applied': 0,
@@ -263,41 +285,71 @@ class PS5ELFProcessor:
         }
         
         if verbose:
-            self._print(f"\n[Libc Patch] Applying libc.prx patch to SELF files", BLUE, bold=True)
-            self._print(f"Input: {input_dir}", CYAN)
+            self._print(f"\n[Libc Patch] Applying libc.prx patch", BLUE, bold=True)
+            if input_path.is_file():
+                self._print(f"Input file: {input_path}", CYAN)
+            else:
+                self._print(f"Input directory: {input_path}", CYAN)
             self._print(f"Search pattern: {search_pattern}", CYAN)
             self._print(f"Replacement pattern: {replacement_pattern}", CYAN)
         
-        # Search recursively for SELF files to patch
-        self_files = []
-        for root, dirs, files in os.walk(input_dir):
-            for filename in files:
-                file_path = Path(root) / filename
-                if filename.endswith('.bak'):
-                    continue
-                if self._is_self_file(file_path):
-                    self_files.append(file_path)
+        # Collect files to patch
+        files_to_patch = []
         
-        # Also search for libc.prx files specifically
-        for root, dirs, files in os.walk(input_dir):
-            for filename in files:
-                file_path = Path(root) / filename
-                if filename.lower() == 'libc.prx' and file_path not in self_files:
-                    self_files.append(file_path)
+        if input_path.is_file():
+            # Single file input
+            if self._is_self_file(input_path) or 'libc' in input_path.name.lower():
+                files_to_patch.append(input_path)
+            elif verbose:
+                self._print(f"Warning: Input file may not be a SELF or libc file", YELLOW)
+                files_to_patch.append(input_path)  # Try anyway
+        else:
+            # Directory input - search recursively
+            for root, dirs, files in os.walk(input_path):
+                # Skip folders named "decrypted"
+                self._should_skip_dir(dirs, 'decrypted')
+                
+                for filename in files:
+                    file_path = Path(root) / filename
+                    if filename.endswith('.bak'):
+                        continue
+                    if self._is_self_file(file_path):
+                        files_to_patch.append(file_path)
+            
+            # Also search for libc.prx files specifically
+            for root, dirs, files in os.walk(input_path):
+                # Skip folders named "decrypted"
+                self._should_skip_dir(dirs, 'decrypted')
+                
+                for filename in files:
+                    file_path = Path(root) / filename
+                    if filename.lower() == 'libc.prx' and file_path not in files_to_patch:
+                        files_to_patch.append(file_path)
         
-        if not self_files:
+        if not files_to_patch:
             if verbose:
-                self._print(f"No SELF files found in input directory", YELLOW)
+                if input_path.is_file():
+                    self._print(f"Input file is not a recognized SELF or libc file", YELLOW)
+                else:
+                    self._print(f"No SELF files found in input directory", YELLOW)
             return results
         
         if verbose:
-            self._print(f"Found {len(self_files)} file(s) to check for libc patch", CYAN)
+            if input_path.is_file():
+                self._print(f"Checking 1 file", CYAN)
+            else:
+                self._print(f"Found {len(files_to_patch)} file(s) to check for libc patch", CYAN)
         
-        for file_path in self_files:
-            relative_path = file_path.relative_to(input_dir)
+        for file_path in files_to_patch:
+            # For single file input, show just filename. For directory input, show relative path
+            if input_path.is_file():
+                display_path = file_path.name
+            else:
+                relative_path = file_path.relative_to(input_path)
+                display_path = str(relative_path)
             
             if verbose:
-                self._print(f"Checking: {relative_path}", None)
+                self._print(f"Checking: {display_path}", None)
             
             try:
                 # Read file content
@@ -428,11 +480,11 @@ class PS5ELFProcessor:
         verbose: bool = True
     ) -> Dict[str, Any]:
         """
-        Revert the libc.prx patch from SELF files in the directory.
+        Revert the libc.prx patch from SELF files in the directory or a single file.
         This restores files patched by apply_libc_patch() back to their original state.
         
         Args:
-            input_dir: Directory containing SELF files to revert
+            input_dir: Directory containing SELF files to revert OR a single file path
             search_pattern: Bytes pattern to search for (defaults to LIBC_PATCH_REPLACEMENT)
             original_pattern: Bytes pattern to restore (defaults to LIBC_PATCH_PATTERN)
             create_backup: Create backup files before reverting
@@ -441,7 +493,7 @@ class PS5ELFProcessor:
         Returns:
             Dictionary with reversion results
         """
-        input_dir = Path(input_dir)
+        input_path = Path(input_dir)
         
         if search_pattern is None:
             search_pattern = self.LIBC_PATCH_REPLACEMENT
@@ -450,7 +502,8 @@ class PS5ELFProcessor:
         
         results = {
             'operation': 'revert_libc_patch',
-            'input_dir': str(input_dir),
+            'input_path': str(input_path),
+            'is_file': input_path.is_file(),
             'search_pattern': search_pattern.hex(),
             'original_pattern': original_pattern.hex(),
             'reverted': 0,
@@ -462,42 +515,72 @@ class PS5ELFProcessor:
         }
         
         if verbose:
-            self._print(f"\n[Libc Patch] Reverting libc.prx patch from SELF files", BLUE, bold=True)
-            self._print(f"Input: {input_dir}", CYAN)
+            self._print(f"\n[Libc Patch] Reverting libc.prx patch", BLUE, bold=True)
+            if input_path.is_file():
+                self._print(f"Input file: {input_path}", CYAN)
+            else:
+                self._print(f"Input directory: {input_path}", CYAN)
             self._print(f"Search pattern: {search_pattern}", CYAN)
             self._print(f"Restore pattern: {original_pattern}", CYAN)
             self._print(f"This will restore files to original state for SDK > 6", CYAN)
         
-        # Search recursively for SELF files to revert
-        self_files = []
-        for root, dirs, files in os.walk(input_dir):
-            for filename in files:
-                file_path = Path(root) / filename
-                if filename.endswith('.bak'):
-                    continue
-                if self._is_self_file(file_path):
-                    self_files.append(file_path)
+        # Collect files to revert
+        files_to_revert = []
         
-        # Also search for libc.prx files specifically
-        for root, dirs, files in os.walk(input_dir):
-            for filename in files:
-                file_path = Path(root) / filename
-                if filename.lower() == 'libc.prx' and file_path not in self_files:
-                    self_files.append(file_path)
+        if input_path.is_file():
+            # Single file input
+            if self._is_self_file(input_path) or 'libc' in input_path.name.lower():
+                files_to_revert.append(input_path)
+            elif verbose:
+                self._print(f"Warning: Input file may not be a SELF or libc file", YELLOW)
+                files_to_revert.append(input_path)  # Try anyway
+        else:
+            # Directory input - search recursively
+            for root, dirs, files in os.walk(input_path):
+                # Skip folders named "decrypted"
+                self._should_skip_dir(dirs, 'decrypted')
+                
+                for filename in files:
+                    file_path = Path(root) / filename
+                    if filename.endswith('.bak'):
+                        continue
+                    if self._is_self_file(file_path):
+                        files_to_revert.append(file_path)
+            
+            # Also search for libc.prx files specifically
+            for root, dirs, files in os.walk(input_path):
+                # Skip folders named "decrypted"
+                self._should_skip_dir(dirs, 'decrypted')
+                
+                for filename in files:
+                    file_path = Path(root) / filename
+                    if filename.lower() == 'libc.prx' and file_path not in files_to_revert:
+                        files_to_revert.append(file_path)
         
-        if not self_files:
+        if not files_to_revert:
             if verbose:
-                self._print(f"No SELF files found in input directory", YELLOW)
+                if input_path.is_file():
+                    self._print(f"Input file is not a recognized SELF or libc file", YELLOW)
+                else:
+                    self._print(f"No SELF files found in input directory", YELLOW)
             return results
         
         if verbose:
-            self._print(f"Found {len(self_files)} file(s) to check for libc patch reversion", CYAN)
+            if input_path.is_file():
+                self._print(f"Checking 1 file", CYAN)
+            else:
+                self._print(f"Found {len(files_to_revert)} file(s) to check for libc patch reversion", CYAN)
         
-        for file_path in self_files:
-            relative_path = file_path.relative_to(input_dir)
+        for file_path in files_to_revert:
+            # For single file input, show just filename. For directory input, show relative path
+            if input_path.is_file():
+                display_path = file_path.name
+            else:
+                relative_path = file_path.relative_to(input_path)
+                display_path = str(relative_path)
             
             if verbose:
-                self._print(f"Checking: {relative_path}", None)
+                self._print(f"Checking: {display_path}", None)
             
             try:
                 # Read file content
@@ -620,16 +703,16 @@ class PS5ELFProcessor:
     
     def check_libc_patch_status(
         self,
-        input_dir: Union[str, Path],
+        input_path: Union[str, Path],
         search_pattern: bytes = None,
         patch_pattern: bytes = None,
         verbose: bool = True
     ) -> Dict[str, Any]:
         """
-        Check the status of libc.prx patches in SELF files.
+        Check the status of libc.prx patches in SELF files or a single file.
         
         Args:
-            input_dir: Directory containing SELF files to check
+            input_path: Directory containing SELF files OR a single file to check
             search_pattern: Original bytes pattern (defaults to LIBC_PATCH_PATTERN)
             patch_pattern: Patch bytes pattern (defaults to LIBC_PATCH_REPLACEMENT)
             verbose: Print progress information
@@ -637,7 +720,7 @@ class PS5ELFProcessor:
         Returns:
             Dictionary with patch status information
         """
-        input_dir = Path(input_dir)
+        input_path = Path(input_path)
         
         if search_pattern is None:
             search_pattern = self.LIBC_PATCH_PATTERN
@@ -646,7 +729,8 @@ class PS5ELFProcessor:
         
         results = {
             'operation': 'check_libc_patch_status',
-            'input_dir': str(input_dir),
+            'input_path': str(input_path),
+            'is_file_input': input_path.is_file(),
             'original_pattern': search_pattern.hex(),
             'patch_pattern': patch_pattern.hex(),
             'original_files': [],
@@ -659,38 +743,69 @@ class PS5ELFProcessor:
         }
         
         if verbose:
-            self._print(f"\n[Libc Patch] Checking libc.prx patch status in SELF files", BLUE, bold=True)
-            self._print(f"Input: {input_dir}", CYAN)
+            self._print(f"\n[Libc Patch] Checking libc.prx patch status", BLUE, bold=True)
+            if input_path.is_file():
+                self._print(f"Input: Single file: {input_path}", CYAN)
+            else:
+                self._print(f"Input: Directory: {input_path}", CYAN)
         
-        # Search recursively for SELF files to check
+        # Collect files to check
         self_files = []
-        for root, dirs, files in os.walk(input_dir):
-            for filename in files:
-                file_path = Path(root) / filename
-                if filename.endswith('.bak'):
-                    continue
-                if self._is_self_file(file_path):
-                    self_files.append(file_path)
         
-        # Also search for libc.prx files specifically
-        for root, dirs, files in os.walk(input_dir):
-            for filename in files:
-                file_path = Path(root) / filename
-                if filename.lower() == 'libc.prx' and file_path not in self_files:
-                    self_files.append(file_path)
+        if input_path.is_file():
+            # Single file input
+            if self._is_self_file(input_path) or 'libc' in input_path.name.lower():
+                self_files.append(input_path)
+            elif verbose:
+                self._print(f"Input file may not be a recognized SELF or libc file", YELLOW)
+                self_files.append(input_path)  # Try to check anyway
+        else:
+            # Directory input - search recursively
+            for root, dirs, files in os.walk(input_path):
+                # Skip folders named "decrypted"
+                self._should_skip_dir(dirs, 'decrypted')
+                
+                for filename in files:
+                    file_path = Path(root) / filename
+                    if filename.endswith('.bak'):
+                        continue
+                    if self._is_self_file(file_path):
+                        self_files.append(file_path)
+            
+            # Also search for libc.prx files specifically
+            for root, dirs, files in os.walk(input_path):
+                # Skip folders named "decrypted"
+                self._should_skip_dir(dirs, 'decrypted')
+                
+                for filename in files:
+                    file_path = Path(root) / filename
+                    if filename.lower() == 'libc.prx' and file_path not in self_files:
+                        self_files.append(file_path)
         
         if not self_files:
             if verbose:
-                self._print(f"No SELF files found in input directory", YELLOW)
+                if input_path.is_file():
+                    self._print(f"Input file is not a valid SELF or libc file", YELLOW)
+                else:
+                    self._print(f"No SELF files found in input directory", YELLOW)
             return results
         
         results['total_files'] = len(self_files)
         
         if verbose:
-            self._print(f"Found {len(self_files)} file(s) to check", CYAN)
+            if input_path.is_file():
+                self._print(f"Checking 1 file", CYAN)
+            else:
+                self._print(f"Found {len(self_files)} file(s) to check", CYAN)
         
         for file_path in self_files:
-            relative_path = file_path.relative_to(input_dir)
+            # For single file input, show just filename. For directory input, show relative path
+            if input_path.is_file():
+                display_path = file_path.name
+                relative_path = file_path  # Use full path for single file
+            else:
+                relative_path = file_path.relative_to(input_path)
+                display_path = str(relative_path)
             
             try:
                 # Read file content
@@ -702,11 +817,14 @@ class PS5ELFProcessor:
                 
                 file_info = {
                     'path': str(file_path),
-                    'relative_path': str(relative_path),
                     'has_original': has_original,
                     'has_patch': has_patch,
                     'is_libc_file': 'libc' in file_path.name.lower()
                 }
+                
+                # Add relative path only for directory inputs
+                if not input_path.is_file():
+                    file_info['relative_path'] = str(relative_path)
                 
                 if has_original and not has_patch:
                     results['original_files'].append(file_info)
@@ -726,7 +844,7 @@ class PS5ELFProcessor:
                     color = CYAN
                 
                 if verbose:
-                    status_display = f"{relative_path}"
+                    status_display = f"{display_path}"
                     if 'libc' in file_path.name.lower():
                         status_display += " [libc]"
                     self._print(f"{status_display}: {status}", color)
@@ -734,13 +852,16 @@ class PS5ELFProcessor:
             except Exception as e:
                 error_info = {
                     'path': str(file_path),
-                    'relative_path': str(relative_path),
                     'error': str(e)
                 }
+                # Add relative path only for directory inputs
+                if not input_path.is_file():
+                    error_info['relative_path'] = str(relative_path)
+                
                 results['error_files'].append(error_info)
                 
                 if verbose:
-                    self._print(f"{relative_path}: Error reading file", RED)
+                    self._print(f"{display_path}: Error reading file", RED)
         
         if verbose:
             self._print(f"\nPatch status summary:", BLUE, bold=True)
@@ -752,6 +873,51 @@ class PS5ELFProcessor:
             self._print(f"  Total files: {results['total_files']}")
         
         return results
+    
+    def check_libc_patch_in_file(
+        self,
+        input_file: Union[str, Path],
+        search_pattern: bytes = None,
+        patch_pattern: bytes = None,
+        verbose: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Check the status of libc.prx patch in a single file.
+        
+        Args:
+            input_file: Single file to check
+            search_pattern: Original bytes pattern (defaults to LIBC_PATCH_PATTERN)
+            patch_pattern: Patch bytes pattern (defaults to LIBC_PATCH_REPLACEMENT)
+            verbose: Print progress information
+            
+        Returns:
+            Dictionary with patch status information
+        """
+        input_path = Path(input_file)
+        
+        if not input_path.exists():
+            return {
+                'operation': 'check_libc_patch_in_file',
+                'input_file': str(input_file),
+                'error': 'File does not exist',
+                'timestamp': self._get_timestamp()
+            }
+        
+        if not input_path.is_file():
+            return {
+                'operation': 'check_libc_patch_in_file',
+                'input_file': str(input_file),
+                'error': 'Path is not a file',
+                'timestamp': self._get_timestamp()
+            }
+        
+        # Use the existing method but for single file
+        return self.check_libc_patch_status(
+            input_path=input_file,
+            search_pattern=search_pattern,
+            patch_pattern=patch_pattern,
+            verbose=verbose
+        )
     
     def downgrade_and_sign(
         self,
@@ -837,6 +1003,9 @@ class PS5ELFProcessor:
         # Find all ELF files in input directory
         elf_files = []
         for root, dirs, files in os.walk(input_dir):
+            # Skip folders named "decrypted"
+            self._should_skip_dir(dirs, 'decrypted')
+            
             for filename in files:
                 file_path = Path(root) / filename
                 if filename.endswith('.bak'):
@@ -923,7 +1092,6 @@ class PS5ELFProcessor:
                 continue
             
             # Output file keeps same name but will be SELF format
-            # Change extension to .self or keep original
             output_file = output_dir / relative_path
             
             # Create parent directories if they don't exist
@@ -1032,7 +1200,7 @@ class PS5ELFProcessor:
         
         return results
     
-    def process_full_pipeline(
+    def decrypt_and_sign_pipeline(
         self,
         input_dir: Union[str, Path],
         output_dir: Union[str, Path],
@@ -1044,14 +1212,17 @@ class PS5ELFProcessor:
         overwrite: bool = False,
         apply_libc_patch: bool = True,
         auto_revert_for_high_sdk: bool = True,
-        verbose: bool = True
+        verbose: bool = True,
+        save_to_config: bool = True
     ) -> Dict[str, Any]:
         """
-        Process files through full pipeline: decrypt → downgrade → sign.
+        Process files through a combined pipeline that automatically detects file types.
+        If files are SELF: decrypt → save to decrypted folder → downgrade → sign
+        If files are ELF: downgrade → sign directly
         libc.prx patch is applied AFTER signing to the SELF files.
         
         Args:
-            input_dir: Directory containing SELF files
+            input_dir: Directory containing SELF or ELF files
             output_dir: Directory for final output SELF files
             sdk_pair: SDK version pair number (1-10)
             paid: Program Authentication ID
@@ -1062,79 +1233,388 @@ class PS5ELFProcessor:
             apply_libc_patch: Apply libc.prx patch for SDK pairs 1-6
             auto_revert_for_high_sdk: Automatically revert patch if SDK > 6
             verbose: Print progress information
+            save_to_config: Whether to save directories to config file
             
         Returns:
             Dictionary with processing results
         """
-        # Create temporary directory for intermediate files
-        temp_dir = Path(tempfile.mkdtemp(prefix="ps5_elf_"))
+        input_dir = Path(input_dir)
+        output_dir = Path(output_dir)
         
-        try:
-            if verbose:
-                self._print(f"\n[Full Pipeline] Starting processing", BLUE, bold=True)
-                self._print(f"Using temporary directory: {temp_dir}", CYAN)
-            
-            # Step 1: Decrypt SELF → ELF
-            decrypt_results = self.decrypt_files(
-                input_dir=input_dir, 
-                output_dir=temp_dir, 
-                overwrite=overwrite, 
-                verbose=verbose,
-                save_to_config=False
-            )
-            
-            if decrypt_results['successful'] == 0:
-                if verbose:
-                    self._print(f"No files successfully decrypted. Aborting pipeline.", RED)
-                return {
-                    'operation': 'full_pipeline',
-                    'input_dir': str(input_dir),
-                    'output_dir': str(output_dir),
-                    'decrypt': decrypt_results,
-                    'downgrade_and_sign': {
-                        'successful': 0,
-                        'failed': 0,
-                        'files': {},
-                        'fakelib': {'success': False, 'message': 'Pipeline aborted'},
-                        'libc_patch': {'applied': 0, 'reverted': 0, 'results': {}},
-                        'fakelib_copies': {'created': 0, 'locations': []}
-                    },
-                    'timestamp': self._get_timestamp()
-                }
-            
-            # Step 2: Downgrade and sign ELF → SELF
+        # Save directories to config only if requested
+        if save_to_config:
             self._save_directories_to_config(str(input_dir), str(output_dir))
+        
+        results = {
+            'operation': 'decrypt_and_sign_pipeline',
+            'input_dir': str(input_dir),
+            'output_dir': str(output_dir),
+            'sdk_pair': sdk_pair,
+            'paid': paid,
+            'ptype': ptype,
+            'detection': {'self_files': 0, 'elf_files': 0, 'other_files': 0},
+            'decrypt': {'successful': 0, 'failed': 0, 'files': {}},
+            'downgrade': {'successful': 0, 'failed': 0, 'files': {}},
+            'signing': {'successful': 0, 'failed': 0, 'files': {}},
+            'fakelib': {'success': False, 'message': ''},
+            'libc_patch': {'applied': 0, 'reverted': 0, 'results': {}},
+            'fakelib_copies': {'created': 0, 'locations': []},
+            'decrypted_folder': None,
+            'timestamp': self._get_timestamp()
+        }
+        
+        if verbose:
+            self._print(f"\n[Step 1/5] Detecting File Types", BLUE, bold=True)
+            self._print(f"Input: {input_dir}", CYAN)
+            self._print(f"Output: {output_dir}", CYAN)
+        
+        # Step 1: Detect file types
+        self_files = []
+        elf_files = []
+        
+        for root, dirs, files in os.walk(input_dir):
+            # Skip folders named "decrypted"
+            self._should_skip_dir(dirs, 'decrypted')
             
-            downgrade_sign_results = self.downgrade_and_sign(
-                temp_dir, output_dir, sdk_pair, paid, ptype,
-                fakelib_source, create_backup, overwrite, 
-                apply_libc_patch, auto_revert_for_high_sdk, verbose,
-                save_to_config=False
-            )
-            
-            # Combine results
-            results = {
-                'operation': 'full_pipeline',
-                'input_dir': str(input_dir),
-                'output_dir': str(output_dir),
-                'sdk_pair': sdk_pair,
-                'paid': paid,
-                'ptype': ptype,
-                'decrypt': decrypt_results,
-                'downgrade_and_sign': downgrade_sign_results,
-                'timestamp': self._get_timestamp()
-            }
-            
+            for filename in files:
+                file_path = Path(root) / filename
+                if filename.endswith('.bak'):
+                    continue
+                
+                if self._is_self_file(file_path):
+                    self_files.append(file_path)
+                    results['detection']['self_files'] += 1
+                elif self._is_elf_file(file_path):
+                    elf_files.append(file_path)
+                    results['detection']['elf_files'] += 1
+                else:
+                    results['detection']['other_files'] += 1
+        
+        if verbose:
+            self._print(f"Found: {len(self_files)} SELF file(s), {len(elf_files)} ELF file(s), "
+                       f"{results['detection']['other_files']} other file(s)", CYAN)
+        
+        if not self_files and not elf_files:
+            if verbose:
+                self._print(f"No SELF or ELF files found in input directory", YELLOW)
             return results
+        
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Step 2: If there are SELF files, decrypt them first
+        working_dir = output_dir / "working"
+        decrypt_output_dir = output_dir / "decrypted"
+        
+        if self_files:
+            if verbose:
+                self._print(f"\n[Step 2/5] Decrypting SELF Files", BLUE, bold=True)
+                self._print(f"Decrypting {len(self_files)} SELF file(s) to: {decrypt_output_dir}", CYAN)
             
-        finally:
-            # Clean up temporary directory
-            try:
-                shutil.rmtree(temp_dir)
+            # Create decrypted output folder
+            decrypt_output_dir.mkdir(parents=True, exist_ok=True)
+            results['decrypted_folder'] = str(decrypt_output_dir)
+            
+            # Initialize converter
+            converter = UnsignedELFConverter(verbose=verbose)
+            
+            for self_file in self_files:
+                relative_path = self_file.relative_to(input_dir)
+                
+                # Output file in decrypted folder
+                output_file = decrypt_output_dir / relative_path
+                
+                # Create parent directories if they don't exist
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Check if file exists and skip if not overwriting
+                if output_file.exists() and not overwrite:
+                    if verbose:
+                        self._print(f"Skipping (exists): {relative_path}", YELLOW)
+                    continue
+                
                 if verbose:
-                    self._print(f"Cleaned up temporary directory", CYAN)
-            except:
-                pass
+                    self._print(f"Decrypting: {relative_path}", None)
+                
+                # Decrypt the file
+                try:
+                    success = converter.convert_file(str(self_file), str(output_file))
+                    
+                    file_result = {
+                        'success': success,
+                        'output': str(output_file),
+                        'message': 'Success' if success else 'Failed'
+                    }
+                    
+                    results['decrypt']['files'][str(self_file)] = file_result
+                    
+                    if success:
+                        results['decrypt']['successful'] += 1
+                        if verbose:
+                            self._print(f"  ✓ Success", GREEN)
+                    else:
+                        results['decrypt']['failed'] += 1
+                        if verbose:
+                            self._print(f"  ✗ Failed", RED)
+                            
+                except Exception as e:
+                    results['decrypt']['failed'] += 1
+                    error_msg = f"Error: {str(e)}"
+                    file_result = {
+                        'success': False,
+                        'output': str(output_file),
+                        'message': error_msg
+                    }
+                    results['decrypt']['files'][str(self_file)] = file_result
+                    if verbose:
+                        self._print(f"  ✗ {error_msg[:50]}", RED)
+            
+            if verbose:
+                self._print(f"\nDecryption complete: {results['decrypt']['successful']} successful, "
+                           f"{results['decrypt']['failed']} failed", CYAN)
+            
+            # Set working directory to decrypted files for downgrade/sign
+            working_dir = decrypt_output_dir
+            
+        else:
+            # No SELF files, use original ELF files directly
+            working_dir = input_dir
+        
+        # Step 3: Copy any existing ELF files to working directory structure
+        if elf_files and self_files:  # Only if we have both types
+            if verbose:
+                self._print(f"\n[Step 3/5] Copying existing ELF files to working directory", BLUE, bold=True)
+            
+            for elf_file in elf_files:
+                relative_path = elf_file.relative_to(input_dir)
+                dest_file = working_dir / relative_path
+                
+                # Create parent directories if they don't exist
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                if not dest_file.exists() or overwrite:
+                    shutil.copy2(elf_file, dest_file)
+                    if verbose:
+                        self._print(f"Copied: {relative_path}", CYAN)
+        
+        # Step 4: Downgrade SDK versions
+        if verbose:
+            self._print(f"\n[Step 4/5] Downgrading SDK Versions", BLUE, bold=True)
+            self._print(f"Processing files from: {working_dir}", CYAN)
+        
+        sdk_patcher = SDKVersionPatcher(
+            create_backup=create_backup,
+            use_colors=self.use_colors
+        )
+        sdk_patcher.set_versions_by_pair(sdk_pair)
+        
+        ps5_ver, ps4_ver = sdk_patcher.get_current_versions()
+        results['ps5_sdk_version'] = ps5_ver
+        results['ps4_sdk_version'] = ps4_ver
+        
+        if verbose:
+            self._print(f"Using PS5 SDK: 0x{ps5_ver:08X}, PS4 Version: 0x{ps4_ver:08X}", CYAN)
+            if sdk_pair <= 6:
+                self._print(f"SDK pair {sdk_pair} selected - will apply libc.prx patch AFTER signing", YELLOW)
+            elif auto_revert_for_high_sdk:
+                self._print(f"SDK pair {sdk_pair} > 6 - will revert libc.prx patch AFTER signing if found", YELLOW)
+        
+        # Find all ELF files in working directory
+        elf_files_to_process = []
+        for root, dirs, files in os.walk(working_dir):
+            # Skip folders named "decrypted" (including when working_dir is the decrypted folder)
+            self._should_skip_dir(dirs, 'decrypted')
+            
+            for filename in files:
+                file_path = Path(root) / filename
+                if filename.endswith('.bak'):
+                    continue
+                if self._is_elf_file(file_path):
+                    elf_files_to_process.append(file_path)
+        
+        if not elf_files_to_process:
+            if verbose:
+                self._print(f"No ELF files found to downgrade", YELLOW)
+            return results
+        
+        if verbose:
+            self._print(f"Found {len(elf_files_to_process)} ELF file(s) to downgrade", CYAN)
+        
+        for elf_file in elf_files_to_process:
+            relative_path = elf_file.relative_to(working_dir)
+            
+            if verbose:
+                self._print(f"Downgrading: {relative_path}", None)
+            
+            try:
+                success, message = sdk_patcher.patch_file(str(elf_file))
+                
+                results['downgrade']['files'][str(elf_file)] = {
+                    'success': success,
+                    'message': message
+                }
+                
+                if success:
+                    results['downgrade']['successful'] += 1
+                    if verbose:
+                        self._print(f"  ✓ Success", GREEN)
+                else:
+                    results['downgrade']['failed'] += 1
+                    if verbose:
+                        self._print(f"  ✗ {message[:50]}", RED)
+                    
+            except Exception as e:
+                results['downgrade']['failed'] += 1
+                error_msg = f"Error: {str(e)}"
+                results['downgrade']['files'][str(elf_file)] = {
+                    'success': False,
+                    'message': error_msg
+                }
+                if verbose:
+                    self._print(f"  ✗ {error_msg[:50]}", RED)
+        
+        if verbose:
+            self._print(f"\nDowngrade complete: {results['downgrade']['successful']} successful, "
+                       f"{results['downgrade']['failed']} failed", CYAN)
+        
+        # Step 5: Fake sign the downgraded ELF files to SELF format
+        if verbose:
+            self._print(f"\n[Step 5/5] Fake Signing Files (ELF → SELF)", BLUE, bold=True)
+            self._print(f"Using PAID: 0x{paid:016X}, PType: 0x{ptype:08X}", CYAN)
+        
+        # Initialize converter
+        converter = FakeSignedELFConverter(
+            paid=paid,
+            ptype=ptype,
+            app_version=0,
+            fw_version=0,
+            auth_info=None
+        )
+        
+        for elf_file in elf_files_to_process:
+            relative_path = elf_file.relative_to(working_dir)
+            input_file_str = str(elf_file)
+            
+            # Skip if downgrade failed
+            if not results['downgrade']['files'].get(input_file_str, {}).get('success', False):
+                if verbose:
+                    self._print(f"Skipping (downgrade failed): {relative_path}", YELLOW)
+                results['signing']['files'][str(elf_file)] = {
+                    'success': False,
+                    'output': '',
+                    'message': 'Skipped due to downgrade failure'
+                }
+                results['signing']['failed'] += 1
+                continue
+            
+            # Output file keeps relative path structure
+            output_file = output_dir / relative_path
+            
+            # Create parent directories if they don't exist
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Check if file exists and skip if not overwriting
+            if output_file.exists() and not overwrite:
+                if verbose:
+                    self._print(f"Skipping (exists): {relative_path}", YELLOW)
+                continue
+            
+            if verbose:
+                self._print(f"Signing: {relative_path}", None)
+            
+            # Sign the ELF file (converts to SELF format)
+            try:
+                success = converter.sign_file(input_file_str, str(output_file))
+                
+                results['signing']['files'][str(elf_file)] = {
+                    'success': success,
+                    'output': str(output_file),
+                    'message': 'Success' if success else 'Failed'
+                }
+                
+                if success:
+                    results['signing']['successful'] += 1
+                    if verbose:
+                        self._print(f"  ✓ Success (converted to SELF)", GREEN)
+                else:
+                    results['signing']['failed'] += 1
+                    if verbose:
+                        self._print(f"  ✗ Failed", RED)
+                    
+            except Exception as e:
+                results['signing']['failed'] += 1
+                error_msg = f"Error: {str(e)}"
+                results['signing']['files'][str(elf_file)] = {
+                    'success': False,
+                    'output': str(output_file),
+                    'message': error_msg
+                }
+                if verbose:
+                    self._print(f"  ✗ {error_msg[:50]}", RED)
+        
+        if verbose:
+            self._print(f"\nSigning complete: {results['signing']['successful']} successful, "
+                       f"{results['signing']['failed']} failed", CYAN)
+            self._print(f"All ELF files have been converted to SELF format", CYAN)
+        
+        # Step 6: Handle libc.prx patch based on SDK version
+        # IMPORTANT: This is done AFTER signing, on the SELF files
+        if apply_libc_patch:
+            if sdk_pair <= 6:
+                # Apply patch for SDK 1-6 (on SELF files)
+                if verbose:
+                    self._print(f"\n[Step 6/6] Applying libc.prx patch to SELF files (SDK ≤ 6)", BLUE, bold=True)
+                    self._print(f"Patching SELF files in output directory", CYAN)
+                
+                patch_results = self.apply_libc_patch(
+                    output_dir,  # Patch the signed SELF files
+                    create_backup=False,
+                    verbose=verbose
+                )
+                results['libc_patch']['applied'] = patch_results['applied']
+                results['libc_patch']['results'] = patch_results
+                
+            elif auto_revert_for_high_sdk:
+                # Revert patch for SDK > 6 (on SELF files)
+                if verbose:
+                    self._print(f"\n[Step 6/6] Reverting libc.prx patch from SELF files (SDK > 6)", BLUE, bold=True)
+                    self._print(f"Reverting patches in SELF files in output directory", CYAN)
+                
+                revert_results = self.revert_libc_patch(
+                    output_dir,  # Revert patches on signed SELF files
+                    create_backup=False,
+                    verbose=verbose
+                )
+                results['libc_patch']['reverted'] = revert_results['reverted']
+                results['libc_patch']['results'] = revert_results
+        
+        # Step 7: Copy fakelib directory to output directory AND to eboot.bin locations
+        if fakelib_source:
+            fakelib_source_path = Path(fakelib_source)
+            if verbose:
+                self._print(f"\n[Step 7/7] Copying Fakelib Directory", BLUE, bold=True)
+            
+            # First, copy to output directory
+            success, message = self._copy_fakelib(fakelib_source_path, output_dir)
+            results['fakelib']['success'] = success
+            results['fakelib']['message'] = message
+            
+            if verbose:
+                if success:
+                    self._print(f"✓ {message}", GREEN)
+                else:
+                    self._print(f"⚠ {message}", YELLOW)
+            
+            # Also copy fakelib to directories containing eboot.bin files
+            if success:
+                fakelib_copies = self._copy_fakelib_to_eboot_dirs(fakelib_source_path, output_dir, verbose)
+                results['fakelib_copies']['created'] = fakelib_copies['created']
+                results['fakelib_copies']['locations'] = fakelib_copies['locations']
+                
+                if verbose and fakelib_copies['created'] > 0:
+                    self._print(f"✓ Created {fakelib_copies['created']} fakelib copy(ies) in eboot.bin directories", GREEN)
+        
+        return results
     
     def _copy_fakelib(self, fakelib_source: Path, output_dir: Path) -> Tuple[bool, str]:
         """Copy the fakelib directory to the output directory."""
@@ -1432,31 +1912,33 @@ def get_ptype_choice() -> int:
 def get_operation_choice() -> str:
     """Prompt user to select operation mode."""
     operations = {
-        '1': 'downgrade_and_sign',
-        '2': 'decrypt_only',
-        '3': 'full_pipeline'
+        '1': 'decrypt_and_sign_pipeline',  # DEFAULT
+        '2': 'downgrade_and_sign',
+        '3': 'decrypt_only',
+        '4': 'downgrade_and_sign'  # Legacy alias for backward compatibility
     }
     
     print(f"\n{CYAN}Available Operations:{RESET}")
     print(f"{YELLOW}{'─' * 60}{RESET}")
     print(f"{BOLD}{'Option':<8} {'Description':<40}{RESET}")
     print(f"{YELLOW}{'─' * 60}{RESET}")
-    print(f"  1       Downgrade and sign only (convert ELF to SELF)")
-    print(f"  2       Decrypt only (convert SELF to ELF)")
-    print(f"  3       Full pipeline (decrypt → downgrade → sign)")
+    print(f"  1       Auto-detect pipeline (decrypt SELF, sign everything) - DEFAULT")
+    print(f"  2       Downgrade and sign only (convert ELF to SELF)")
+    print(f"  3       Decrypt only (convert SELF to ELF)")
+    print(f"  4       Legacy pipeline (for backward compatibility)")
     
     print(f"{YELLOW}{'─' * 60}{RESET}")
     
     while True:
-        choice = input(f"\n{CYAN}Select operation (1-3, default=1): {RESET}").strip()
+        choice = input(f"\n{CYAN}Select operation (1-4, default=1): {RESET}").strip()
         if not choice:
-            print(f"{YELLOW}Using default: Downgrade and sign{RESET}")
-            return 'downgrade_and_sign'
+            print(f"{YELLOW}Using default: Auto-detect pipeline{RESET}")
+            return 'decrypt_and_sign_pipeline'
         
         if choice in operations:
             return operations[choice]
         else:
-            print(f"{RED}Invalid choice. Please select 1-3.{RESET}")
+            print(f"{RED}Invalid choice. Please select 1-4.{RESET}")
 
 def get_fakelib_choice(project_root: Path, args_fakelib: Optional[str] = None) -> Optional[Path]:
     """Prompt user to select or specify fakelib directory."""
@@ -1567,12 +2049,19 @@ def print_summary(results: Dict[str, Dict[str, any]], output_dir: Path, operatio
     print(f"{BLUE}{BOLD}══════════════════════════════════════════════════════════{RESET}")
     
     operation_display = {
+        'decrypt_and_sign_pipeline': 'Auto-detect Pipeline',
         'downgrade_and_sign': 'Downgrade & Sign',
-        'decrypt_only': 'Decrypt Only',
-        'full_pipeline': 'Full Pipeline'
+        'decrypt_only': 'Decrypt Only'
     }
     
     print(f"\n{BOLD}Operation:{RESET} {operation_display.get(operation, operation)}")
+    
+    if 'detection' in results:
+        detection = results['detection']
+        print(f"\n{BOLD}File Detection:{RESET}")
+        print(f"  {CYAN}SELF files: {detection['self_files']}{RESET}")
+        print(f"  {CYAN}ELF files: {detection['elf_files']}{RESET}")
+        print(f"  {CYAN}Other files: {detection['other_files']}{RESET}")
     
     if 'decrypt' in results:
         decrypt = results['decrypt']
@@ -1623,7 +2112,7 @@ def print_summary(results: Dict[str, Dict[str, any]], output_dir: Path, operatio
             else:
                 print(f"  {YELLOW}⚠ {fakelib['message']}{RESET}")
     
-    # NEW: Show fakelib copies to eboot.bin directories
+    # Show fakelib copies to eboot.bin directories
     if 'fakelib_copies' in results:
         fakelib_copies = results['fakelib_copies']
         if fakelib_copies.get('created', 0) > 0:
@@ -1633,6 +2122,11 @@ def print_summary(results: Dict[str, Dict[str, any]], output_dir: Path, operatio
                 print(f"  {CYAN}  • {Path(location).relative_to(Path(results.get('output_dir', '')))}{RESET}")
             if len(fakelib_copies.get('locations', [])) > 3:
                 print(f"  {CYAN}  ... and {len(fakelib_copies['locations']) - 3} more{RESET}")
+    
+    # Show decrypted folder location
+    if 'decrypted_folder' in results and results['decrypted_folder']:
+        print(f"\n{BOLD}Decrypted Files:{RESET}")
+        print(f"  {CYAN}Saved to: {results['decrypted_folder']}{RESET}")
     
     # List failed files if any
     failed_files = []
@@ -1685,7 +2179,7 @@ def run_interactive_cli():
     
     # Get fakelib directory if needed
     fakelib_source = None
-    if operation in ['downgrade_and_sign', 'full_pipeline']:
+    if operation in ['decrypt_and_sign_pipeline', 'downgrade_and_sign']:
         fakelib_source = get_fakelib_choice(project_root)
     
     # Get configuration based on operation mode
@@ -1693,7 +2187,7 @@ def run_interactive_cli():
     paid = None
     ptype = None
     
-    if operation in ['downgrade_and_sign', 'full_pipeline']:
+    if operation in ['decrypt_and_sign_pipeline', 'downgrade_and_sign']:
         # Get SDK version pair
         sdk_pair = get_sdk_version_choice()
         
@@ -1716,7 +2210,7 @@ def run_interactive_cli():
     else:
         print(f"  {BOLD}Fakelib Source:{RESET} None (will skip)")
     
-    if operation in ['downgrade_and_sign', 'full_pipeline']:
+    if operation in ['decrypt_and_sign_pipeline', 'downgrade_and_sign']:
         pairs = SDKVersionPatcher.get_supported_pairs()
         ps5_sdk_version, ps4_version = pairs[sdk_pair]
         print(f"  {BOLD}SDK Version Pair:{RESET} {sdk_pair} (PS5: 0x{ps5_sdk_version:08X}, PS4: 0x{ps4_version:08X})")
@@ -1760,8 +2254,8 @@ def run_interactive_cli():
                 verbose=True
             )
         
-        elif operation == 'full_pipeline':
-            results = processor.process_full_pipeline(
+        elif operation == 'decrypt_and_sign_pipeline':
+            results = processor.decrypt_and_sign_pipeline(
                 input_dir=input_dir,
                 output_dir=output_dir,
                 sdk_pair=sdk_pair,
@@ -1878,7 +2372,7 @@ def sign_file(
             apply_libc_patch=False,
             auto_revert_for_high_sdk=True,
             verbose=verbose,
-            save_to_config=False  # Don't save temp directories to config
+            save_to_config=False
         )
         
         # Check if successful
@@ -1934,18 +2428,35 @@ Examples:
   Interactive mode with prompts (full CLI):
     python Backport.py -c
   
-  Direct command mode:
+  Direct command mode (AUTO is default):
+    python Backport.py --mode auto --input input/ --output output/ --sdk-pair 4
     python Backport.py --mode decrypt --input encrypted/ --output decrypted/
     python Backport.py --mode downgrade --input decrypted/ --output signed/ --sdk-pair 4
-    python Backport.py --mode full --input input/ --output output/ --sdk-pair 4
   
-  Libc patch operations (on SELF files):
-    python Backport.py --mode libc-patch --input signed/ --action apply
-    python Backport.py --mode libc-patch --input signed/ --action revert
+  Auto mode (default) - automatically detects SELF/ELF files:
+    python Backport.py --input input/ --output output/ --sdk-pair 4
+  
+  Libc patch operations (on SELF files OR single files):
+    # Check status of a single file
+    python Backport.py --mode libc-patch --input libc.prx --action check
+    
+    # Check status of all files in a directory
     python Backport.py --mode libc-patch --input signed/ --action check
+    
+    # Apply patch to a single file
+    python Backport.py --mode libc-patch --input libc.prx --action apply
+    
+    # Apply patch to all files in a directory
+    python Backport.py --mode libc-patch --input signed/ --action apply
+    
+    # Revert patch from a single file
+    python Backport.py --mode libc-patch --input libc.prx --action revert
+    
+    # Revert patch from all files in a directory
+    python Backport.py --mode libc-patch --input signed/ --action revert
   
   With custom fakelib:
-    python Backport.py --mode downgrade --input in/ --output out/ --fakelib /path/to/fakelib
+    python Backport.py --input in/ --output out/ --sdk-pair 4 --fakelib /path/to/fakelib
   
   List available SDK pairs:
     python Backport.py --list-sdk-pairs
@@ -1963,8 +2474,9 @@ Examples:
     parser.add_argument(
         '--mode', '-m',
         type=str,
-        choices=['decrypt', 'downgrade', 'full', 'libc-patch'],
-        help='Operation mode: decrypt (SELF to ELF), downgrade (ELF to SELF), full (both), libc-patch (libc operations)'
+        choices=['auto', 'decrypt', 'downgrade', 'libc-patch'],
+        default='auto',  # AUTO IS NOW DEFAULT
+        help='Operation mode: auto (detect file type), decrypt (SELF to ELF), downgrade (ELF to SELF), libc-patch (libc operations)'
     )
     
     # Libc patch specific arguments
@@ -1975,17 +2487,17 @@ Examples:
         help='Action for libc-patch mode: apply, revert, or check status'
     )
     
-    # Input/output arguments
+    # Input arguments (can be file or directory)
     parser.add_argument(
         '--input', '-i',
         type=str,
-        help='Input directory containing files'
+        help='Input directory OR file containing files'
     )
     
     parser.add_argument(
         '--output', '-o',
         type=str,
-        help='Output directory for processed files'
+        help='Output directory for processed files (not used for libc-patch)'
     )
     
     # Downgrade-specific arguments
@@ -2088,7 +2600,7 @@ Examples:
         if not args.input:
             print("Error: --input is required for libc-patch mode")
             sys.exit(1)
-    elif args.mode in ['decrypt', 'downgrade', 'full']:
+    elif args.mode in ['auto', 'decrypt', 'downgrade']:
         if not args.input:
             print(f"Error: --input is required for {args.mode} mode")
             sys.exit(1)
@@ -2096,7 +2608,7 @@ Examples:
             print(f"Error: --output is required for {args.mode} mode")
             sys.exit(1)
     else:
-        print("Error: Either use --cli for interactive mode or specify --mode")
+        print("Error: Invalid mode specified")
         sys.exit(1)
     
     # Initialize processor
@@ -2159,7 +2671,7 @@ Examples:
                 verbose=not args.quiet
             )
             
-        elif args.mode == 'full':
+        elif args.mode == 'auto':
             # Parse ptype
             try:
                 if args.ptype.startswith('0x'):
@@ -2192,7 +2704,7 @@ Examples:
                 if default_fakelib:
                     fakelib_source = str(default_fakelib)
             
-            results = processor.process_full_pipeline(
+            results = processor.decrypt_and_sign_pipeline(
                 input_dir=args.input,
                 output_dir=args.output,
                 sdk_pair=args.sdk_pair,
@@ -2203,25 +2715,51 @@ Examples:
                 overwrite=args.overwrite,
                 apply_libc_patch=not args.no_libc_patch,
                 auto_revert_for_high_sdk=not args.no_auto_revert,
-                verbose=not args.quiet
+                verbose=not args.quiet,
+                save_to_config=True
             )
             
         elif args.mode == 'libc-patch':
+            if not args.action:
+                print("Error: --action is required for libc-patch mode")
+                sys.exit(1)
+            if not args.input:
+                print("Error: --input is required for libc-patch mode")
+                sys.exit(1)
+            
+            input_path = Path(args.input)
+            
+            # For apply/revert, we need to check if input exists
+            if not input_path.exists():
+                print(f"Error: Input path does not exist: {args.input}")
+                sys.exit(1)
+            
+            # Handle single file vs directory
+            if input_path.is_file():
+                if not (processor._is_self_file(input_path) or 'libc' in input_path.name.lower()):
+                    print(f"Warning: Input file may not be a SELF or libc file")
+                    # Ask for confirmation only if not quiet
+                    if not args.quiet:
+                        confirm = input("Continue anyway? (y/N): ").strip().lower()
+                        if confirm not in ['y', 'yes']:
+                            print("Aborted")
+                            sys.exit(0)
+            
             if args.action == 'apply':
                 results = processor.apply_libc_patch(
-                    input_dir=args.input,
+                    input_dir=args.input,  # This works for both files and directories
                     create_backup=True,
                     verbose=not args.quiet
                 )
             elif args.action == 'revert':
                 results = processor.revert_libc_patch(
-                    input_dir=args.input,
+                    input_dir=args.input,  # This works for both files and directories
                     create_backup=True,
                     verbose=not args.quiet
                 )
             elif args.action == 'check':
                 results = processor.check_libc_patch_status(
-                    input_dir=args.input,
+                    input_path=args.input,  # This works for both files and directories
                     verbose=not args.quiet
                 )
         
@@ -2231,6 +2769,13 @@ Examples:
             
             if 'operation' in results:
                 print(f"Operation: {results['operation'].replace('_', ' ').title()}")
+            
+            if 'detection' in results:
+                detection = results['detection']
+                print(f"File detection: {detection['self_files']} SELF, {detection['elf_files']} ELF")
+            
+            if 'decrypted_folder' in results and results['decrypted_folder']:
+                print(f"Decrypted files saved to: {results['decrypted_folder']}")
             
             if 'successful' in results:
                 print(f"Successful: {results['successful']}")
@@ -2244,15 +2789,15 @@ Examples:
             if 'reverted' in results and results['reverted'] > 0:
                 print(f"Libc patches reverted: {results['reverted']}")
             
-            # NEW: Show fakelib copies
+            # Show fakelib copies
             if 'fakelib_copies' in results and results['fakelib_copies'].get('created', 0) > 0:
                 print(f"Fakelib copies to eboot.bin dirs: {results['fakelib_copies']['created']}")
             
             if 'output_dir' in results:
                 print(f"Output: {results['output_dir']}")
             
-            # Special note for downgrade operations
-            if args.mode in ['downgrade', 'full']:
+            # Special note for auto/downgrade operations
+            if args.mode in ['auto', 'downgrade']:
                 print(f"\nNote: All output files are in SELF format")
                 if not args.no_libc_patch:
                     if args.sdk_pair <= 6:
