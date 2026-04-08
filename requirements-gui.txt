@@ -1,0 +1,4 @@
+customtkinter
+Pillow
+py7zr
+rarfile

@@ -9,20 +9,21 @@ A project to make backport for the PS5 using [BackPork](https://github.com/BestP
 This is a project that allow you to downgrade, fake signed and add fakelib to your ps5 games easily.
 
 ### Why using this ?
-This project work using directories, simply put a input directory and a ouput directory, everything else is done automaticlly.
+This project work using directories, simply put a input directory and a ouput directory, everything else is done automatically.
 
-### Where can i find the decrypted games files and the fakelib files ?
+### Where can i find the fakelib files ?
 For legals reasons (and because i don't want my github account banned lol) i can't help with that here.
 
 ---
 
 ## How to use
 
-- Make sure to have [Python](https://www.python.org/downloads/) installed.
+### CLI
+- Make sure to have [Python 3.7+](https://www.python.org/downloads/) installed.
 - Put your patched and signed sprx files inside the folder **"fakelib"**.
-- Once you have [Python](https://www.python.org/downloads/) run 
+- Once you have [Python 3.7+](https://www.python.org/downloads/) run 
 ```bash
- python Backport.py -c
+python Backport.py
 ```
 - You can choose between 4 mode : Auto (default), Downgrade, Decrypt or Legacy pipeline (for backward compatibility).
 - For the first option (input directory) put the directory of your game files.
@@ -35,15 +36,59 @@ For legals reasons (and because i don't want my github account banned lol) i can
 ### One line command
 You can also run a one line command, for exemple to simply downgrade to 7.00:
 ```bash
- python Backport.py --input "/home/user/ps5/decrypted" --output "/home/user/ps5/signed" --sdk-pair 7
+python Backport.py --input "/home/user/ps5/decrypted" --output "/home/user/ps5/signed" --sdk-pair 7
 ```
 Or if you want to only decrypt the fake sign ELF:
 ```bash
- python Backport.py --mode decrypt --input "/home/user/ps5/encrypted" --output "/home/user/ps5/decrypted"
+python Backport.py --mode decrypt --input "/home/user/ps5/encrypted" --output "/home/user/ps5/decrypted"
+```
+You can also directly use archive files as input, the tool automatically detects and extracts:
+```bash
+# Extract and process a ZIP file
+python Backport.py --input game_files.zip --output output/ --sdk-pair 4
+
+# Extract and process a RAR archive with password (not ready yet)
+python Backport.py --input game.part1.rar --output output/ --password "mypassword"
+
+# Extract and process a 7z archive
+python Backport.py --input game.7z --output output/ --sdk-pair 4
+
+# Multi-part archive support (provide the first part | not ready yet)
+python Backport.py --input game.7z.001 --output output/
 ```
 
-### Python library
-You can also use this project as a Python library. 
+---
+
+## GUI
+You can also use the graphical interface (in beta for now but should work fine, expect some bugs), you can either download the latest release [here](https://github.com/Nazky/Auto-Backpork/releases) or use the run script for your os, when the gui start make sure to go to the settings to add your fakelib folder to be able to backport (work with archive files too).
+
+### Windows
+1. Make sure to have [Python 3.7+](https://www.python.org/downloads/) installed if you want to use the run.bat.
+2. If you want to enable support for rar and 7z files you need to install [7-zip](https://www.7-zip.org/) and [WinRAR](https://www.win-rar.com/), if you use the "run.bat" 7-zip should install automatically but you still need to install [WinRAR](https://www.win-rar.com/) manually.
+3. Run the gui by either downloading the latest release or by using the run.bat.
+
+### Linux/MacOS
+1. Make sure to have [Python 3.7+](https://www.python.org/downloads/) installed if you want to use the run.sh.
+2. If you want to enable support for rar and 7z files you need to install [7-zip](https://www.7-zip.org/) and [unrar](https://www.rarlab.com/rar_add.htm), if you use the "run.sh" both should install automatically, if you running the Appimage or the Mac App install both using your package management.
+
+#### Linux
+Debian/Ubuntu :
+sudo apt install p7zip-full unrar
+
+Fedora :
+sudo dnf install p7zip p7zip-plugins unrar
+
+Arch :
+sudo pacman p7zip unrar
+
+#### MacOS :
+Make sure you have [Homebrew](https://brew.sh/) installed first.
+brew install p7zip rar
+
+---
+
+## Python library
+You can also use this project as a Python library, you only need the "Backport.py" and "src" folder. 
 
 For exemple to use the full pipeline:
 ```python
@@ -131,11 +176,61 @@ def process_single_files():
             print("File signed successfully!")
 ```
 
+You can also process archive files directly using the library:
+
+```python
+from Backport import PS5ELFProcessor
+from src.Archive import ArchiveHandler, extract_archive_to_temp, cleanup_temp_dir
+from pathlib import Path
+
+def process_archive():
+    """Process an archive file directly."""
+    
+    # Initialize processor
+    processor = PS5ELFProcessor(use_colors=True)
+    
+    # Archive file path
+    archive_path = Path("/path/to/game.7z")
+    
+    # Extract archive to temporary directory
+    temp_dir, result = extract_archive_to_temp(
+        archive_path=archive_path,
+        verbose=True,
+        provided_password="optional_password"
+    )
+    
+    if temp_dir is None:
+        print("Failed to extract archive")
+        return None
+    
+    try:
+        # Process the extracted files
+        results = processor.decrypt_and_sign_pipeline(
+            input_dir=temp_dir,
+            output_dir=Path("/path/to/output"),
+            sdk_pair=7,
+            paid=0x3100000000000002,
+            ptype=1,
+            verbose=True
+        )
+        
+        return results
+        
+    finally:
+        # Clean up temporary directory
+        cleanup_temp_dir(temp_dir, verbose=True)
+```
+
+---
+
 ## TODO
 - [X] Add FSELF decryptor.
-- [X] Add support for 6.xx/5.xx/4.xx (need some more testing).
+- [X] Add support for fw =<7.
 - [ ] Add BPS files patcher.
-- [ ] Add a GUI.
+- [X] Add a GUI.
+- [ ] Add/Fix support for password protected archives.
+- [ ] Add/Fix support for multipart archvies.
+- [ ] Clean the code.
 
 ## Credit
 [idlesauce](https://github.com/idlesauce) | [ps5_elf_sdk_downgrade.py ](https://gist.github.com/idlesauce/2ded24b7b5ff296f21792a8202542aaa)
